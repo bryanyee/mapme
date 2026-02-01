@@ -12,10 +12,88 @@ const markersData = {};
 // Collision detection settings
 const LABEL_PADDING = 5; // Pixels of padding between labels
 
+// LocalStorage key
+const STORAGE_KEY = 'mapme_data';
+
+// Save current state to localStorage
+function saveToLocalStorage() {
+    const dataToSave = {};
+    Object.keys(markersData).forEach(cityName => {
+        dataToSave[cityName] = {
+            names: markersData[cityName].names,
+            offset: markersData[cityName].offset,
+            manuallyPositioned: markersData[cityName].manuallyPositioned || false
+        };
+    });
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(dataToSave));
+}
+
+// Load state from localStorage
+function loadFromLocalStorage() {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (!saved) return;
+
+    try {
+        const data = JSON.parse(saved);
+        Object.keys(data).forEach(cityName => {
+            const cityData = data[cityName];
+            const city = US_CITIES.find(c => c.name === cityName);
+            if (!city) return;
+
+            // Create marker
+            const marker = L.circleMarker([city.lat, city.lng], {
+                radius: 8,
+                fillColor: '#3498db',
+                color: '#2c3e50',
+                weight: 2,
+                opacity: 1,
+                fillOpacity: 0.8
+            }).addTo(map);
+
+            markersData[cityName] = {
+                marker: marker,
+                label: null,
+                leaderLine: null,
+                names: cityData.names || [],
+                offset: cityData.offset || { x: 10, y: -20 },
+                manuallyPositioned: cityData.manuallyPositioned || false
+            };
+        });
+
+        if (Object.keys(markersData).length > 0) {
+            updateAllLabels();
+            renderMarkersList();
+        }
+    } catch (e) {
+        console.error('Failed to load saved data:', e);
+    }
+}
+
+// Clear all data
+function clearAllData() {
+    // Remove all markers from map
+    Object.keys(markersData).forEach(cityName => {
+        const data = markersData[cityName];
+        if (data.marker) map.removeLayer(data.marker);
+        if (data.label) map.removeLayer(data.label);
+        if (data.leaderLine) map.removeLayer(data.leaderLine);
+    });
+
+    // Clear data
+    Object.keys(markersData).forEach(key => delete markersData[key]);
+
+    // Clear localStorage
+    localStorage.removeItem(STORAGE_KEY);
+
+    // Update UI
+    renderMarkersList();
+}
+
 // DOM elements
 const citySelect = document.getElementById('city-select');
 const nameInput = document.getElementById('name-input');
 const addBtn = document.getElementById('add-btn');
+const clearBtn = document.getElementById('clear-btn');
 const markersList = document.getElementById('markers-list');
 
 // Populate city dropdown
@@ -223,16 +301,6 @@ function updateLeaderLine(cityName) {
         const markerX = markerPoint.x;
         const markerY = markerPoint.y;
 
-        // Calculate distances to each edge's center
-        const distToLeft = Math.abs(markerX - labelLeft);
-        const distToRight = Math.abs(markerX - labelRight);
-        const distToTop = Math.abs(markerY - labelTop);
-        const distToBottom = Math.abs(markerY - labelBottom);
-
-        // Determine if marker is more to the side or above/below
-        const horizontalDist = Math.min(distToLeft, distToRight);
-        const verticalDist = Math.min(distToTop, distToBottom);
-
         if (markerX < labelLeft) {
             // Marker is to the left of the label
             if (markerY < labelTop) {
@@ -361,6 +429,7 @@ function updateMarkerLabel(cityName, resolveCollisions = true) {
         data.manuallyPositioned = true; // Mark as manually positioned
 
         updateLeaderLine(cityName);
+        saveToLocalStorage();
     });
 
     // Draw leader line
@@ -404,6 +473,7 @@ function addCityMarker(cityName, personName) {
 
     updateAllLabels();
     renderMarkersList();
+    saveToLocalStorage();
 }
 
 // Remove city from map
@@ -420,6 +490,7 @@ function removeCityMarker(cityName) {
         delete markersData[cityName];
         updateAllLabels();
         renderMarkersList();
+        saveToLocalStorage();
     }
 }
 
@@ -430,6 +501,7 @@ function removeNameFromCity(cityName, personName) {
         data.names = data.names.filter(n => n !== personName);
         updateAllLabels();
         renderMarkersList();
+        saveToLocalStorage();
     }
 }
 
@@ -498,6 +570,13 @@ nameInput.addEventListener('keypress', (e) => {
     }
 });
 
+clearBtn.addEventListener('click', () => {
+    if (Object.keys(markersData).length === 0) return;
+    if (confirm('Are you sure you want to clear all markers?')) {
+        clearAllData();
+    }
+});
+
 // Recalculate label positions when map zooms or moves
 map.on('zoomend moveend', () => {
     if (Object.keys(markersData).length > 0) {
@@ -507,4 +586,5 @@ map.on('zoomend moveend', () => {
 
 // Initialize
 populateCityDropdown();
+loadFromLocalStorage();
 renderMarkersList();
