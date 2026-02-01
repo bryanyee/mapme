@@ -76,9 +76,11 @@ function resolveOverlaps() {
     const cities = Object.keys(markersData);
     if (cities.length < 2) return;
 
-    // Reset offsets
+    // Reset offsets only for labels that weren't manually positioned
     cities.forEach(cityName => {
-        markersData[cityName].offset = { x: 10, y: -20 };
+        if (!markersData[cityName].manuallyPositioned) {
+            markersData[cityName].offset = { x: 10, y: -20 };
+        }
     });
 
     // Possible offset positions (clockwise from right)
@@ -108,6 +110,42 @@ function resolveOverlaps() {
 
                 if (rectsOverlap(boundsA, boundsB)) {
                     hasOverlap = true;
+
+                    // Skip if the overlapping label was manually positioned
+                    if (markersData[cities[j]].manuallyPositioned) {
+                        // Try to move the first label instead if it's not manually positioned
+                        if (!markersData[cities[i]].manuallyPositioned) {
+                            let resolved = false;
+                            for (const newOffset of offsetPositions) {
+                                markersData[cities[i]].offset = { ...newOffset };
+                                const newBoundsA = getLabelBounds(cities[i]);
+
+                                let overlapsOther = false;
+                                for (let k = 0; k < cities.length; k++) {
+                                    if (k === i) continue;
+                                    const boundsK = getLabelBounds(cities[k]);
+                                    if (boundsK && rectsOverlap(newBoundsA, boundsK)) {
+                                        overlapsOther = true;
+                                        break;
+                                    }
+                                }
+
+                                if (!overlapsOther) {
+                                    resolved = true;
+                                    break;
+                                }
+                            }
+
+                            if (!resolved) {
+                                const currentOffset = markersData[cities[i]].offset;
+                                markersData[cities[i]].offset = {
+                                    x: currentOffset.x,
+                                    y: currentOffset.y + (iter + 1) * 30
+                                };
+                            }
+                        }
+                        continue;
+                    }
 
                     // Try different offset positions for the second label
                     let resolved = false;
@@ -145,6 +183,102 @@ function resolveOverlaps() {
         }
 
         if (!hasOverlap) break;
+    }
+}
+
+// Update leader line for a city
+function updateLeaderLine(cityName) {
+    const data = markersData[cityName];
+    if (!data) return;
+
+    const city = US_CITIES.find(c => c.name === cityName);
+    if (!city) return;
+
+    // Remove existing leader line
+    if (data.leaderLine) {
+        map.removeLayer(data.leaderLine);
+        data.leaderLine = null;
+    }
+
+    const offset = data.offset || { x: 10, y: -20 };
+    const offsetDistance = Math.sqrt(offset.x * offset.x + offset.y * offset.y);
+
+    // Draw leader line if label is significantly offset
+    if (offsetDistance > 30) {
+        const markerPoint = map.latLngToContainerPoint([city.lat, city.lng]);
+        const labelSize = estimateLabelSize(cityName, data.names);
+
+        // Calculate label box bounds
+        const labelLeft = markerPoint.x + offset.x;
+        const labelRight = labelLeft + labelSize.width;
+        const labelTop = markerPoint.y + offset.y;
+        const labelBottom = labelTop + labelSize.height;
+        const labelCenterX = labelLeft + labelSize.width / 2;
+        const labelCenterY = labelTop + labelSize.height / 2;
+
+        // Find the closest point on the label box edge to the marker
+        let connectionPoint;
+
+        // Determine which edge is closest based on marker position relative to label
+        const markerX = markerPoint.x;
+        const markerY = markerPoint.y;
+
+        // Calculate distances to each edge's center
+        const distToLeft = Math.abs(markerX - labelLeft);
+        const distToRight = Math.abs(markerX - labelRight);
+        const distToTop = Math.abs(markerY - labelTop);
+        const distToBottom = Math.abs(markerY - labelBottom);
+
+        // Determine if marker is more to the side or above/below
+        const horizontalDist = Math.min(distToLeft, distToRight);
+        const verticalDist = Math.min(distToTop, distToBottom);
+
+        if (markerX < labelLeft) {
+            // Marker is to the left of the label
+            if (markerY < labelTop) {
+                // Top-left: connect to top-left corner area
+                connectionPoint = L.point(labelLeft, labelTop);
+            } else if (markerY > labelBottom) {
+                // Bottom-left: connect to bottom-left corner area
+                connectionPoint = L.point(labelLeft, labelBottom);
+            } else {
+                // Directly left: connect to left edge at marker's Y level
+                connectionPoint = L.point(labelLeft, Math.max(labelTop, Math.min(labelBottom, markerY)));
+            }
+        } else if (markerX > labelRight) {
+            // Marker is to the right of the label
+            if (markerY < labelTop) {
+                // Top-right: connect to top-right corner area
+                connectionPoint = L.point(labelRight, labelTop);
+            } else if (markerY > labelBottom) {
+                // Bottom-right: connect to bottom-right corner area
+                connectionPoint = L.point(labelRight, labelBottom);
+            } else {
+                // Directly right: connect to right edge at marker's Y level
+                connectionPoint = L.point(labelRight, Math.max(labelTop, Math.min(labelBottom, markerY)));
+            }
+        } else {
+            // Marker is horizontally within the label bounds
+            if (markerY < labelTop) {
+                // Above: connect to top edge
+                connectionPoint = L.point(Math.max(labelLeft, Math.min(labelRight, markerX)), labelTop);
+            } else if (markerY > labelBottom) {
+                // Below: connect to bottom edge
+                connectionPoint = L.point(Math.max(labelLeft, Math.min(labelRight, markerX)), labelBottom);
+            } else {
+                // Marker is inside label bounds - connect to center
+                connectionPoint = L.point(labelCenterX, labelCenterY);
+            }
+        }
+
+        const connectionLatLng = map.containerPointToLatLng(connectionPoint);
+
+        data.leaderLine = L.polyline([[city.lat, city.lng], connectionLatLng], {
+            color: '#999',
+            weight: 1,
+            dashArray: '3, 3',
+            interactive: false
+        }).addTo(map);
     }
 }
 
@@ -193,23 +327,44 @@ function updateMarkerLabel(cityName, resolveCollisions = true) {
         iconAnchor: [-offset.x, -offset.y]
     });
 
-    // Add label marker
-    data.label = L.marker([city.lat, city.lng], { icon: labelIcon, interactive: false }).addTo(map);
+    // Add label marker (draggable)
+    data.label = L.marker([city.lat, city.lng], {
+        icon: labelIcon,
+        draggable: true,
+        autoPan: false
+    }).addTo(map);
 
-    // Draw leader line if label is significantly offset
-    const offsetDistance = Math.sqrt(offset.x * offset.x + offset.y * offset.y);
-    if (offsetDistance > 30) {
-        const point = map.latLngToContainerPoint([city.lat, city.lng]);
-        const labelPoint = L.point(point.x + offset.x, point.y + offset.y + 10);
-        const labelLatLng = map.containerPointToLatLng(labelPoint);
+    // Handle drag events
+    data.label.on('drag', function(e) {
+        const markerPoint = map.latLngToContainerPoint([city.lat, city.lng]);
+        const labelPoint = map.latLngToContainerPoint(e.latlng);
 
-        data.leaderLine = L.polyline([[city.lat, city.lng], labelLatLng], {
-            color: '#999',
-            weight: 1,
-            dashArray: '3, 3',
-            interactive: false
-        }).addTo(map);
-    }
+        // Calculate new offset
+        data.offset = {
+            x: labelPoint.x - markerPoint.x,
+            y: labelPoint.y - markerPoint.y
+        };
+
+        // Update leader line during drag
+        updateLeaderLine(cityName);
+    });
+
+    data.label.on('dragend', function(e) {
+        const markerPoint = map.latLngToContainerPoint([city.lat, city.lng]);
+        const labelPoint = map.latLngToContainerPoint(e.target.getLatLng());
+
+        // Store final offset
+        data.offset = {
+            x: labelPoint.x - markerPoint.x,
+            y: labelPoint.y - markerPoint.y
+        };
+        data.manuallyPositioned = true; // Mark as manually positioned
+
+        updateLeaderLine(cityName);
+    });
+
+    // Draw leader line
+    updateLeaderLine(cityName);
 
     // Resolve collisions after updating (unless called from updateAllLabels)
     if (resolveCollisions && Object.keys(markersData).length > 1) {
