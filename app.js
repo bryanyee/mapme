@@ -6,8 +6,11 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
 }).addTo(map);
 
-// Store markers data: { cityName: { marker, label, names: [] } }
+// Store markers data: { cityName: { marker, label, names: [], offset: {x, y} } }
 const markersData = {};
+
+// Collision detection settings
+const LABEL_PADDING = 5; // Pixels of padding between labels
 
 // DOM elements
 const citySelect = document.getElementById('city-select');
@@ -25,18 +28,153 @@ function populateCityDropdown() {
     });
 }
 
+// Estimate label dimensions based on content
+function estimateLabelSize(cityName, names) {
+    const cityTextWidth = cityName.length * 7 + 16; // Approximate character width + padding
+    const namesText = names.join(', ');
+    const namesTextWidth = namesText.length * 6 + 16;
+    const width = Math.max(cityTextWidth, namesTextWidth, 80);
+    const height = names.length > 0 ? 42 : 26; // Height depends on whether names exist
+    return { width, height };
+}
+
+// Get label bounding box in pixel coordinates
+function getLabelBounds(cityName) {
+    const data = markersData[cityName];
+    if (!data) return null;
+
+    const city = US_CITIES.find(c => c.name === cityName);
+    if (!city) return null;
+
+    const point = map.latLngToContainerPoint([city.lat, city.lng]);
+    const size = estimateLabelSize(cityName, data.names);
+    const offset = data.offset || { x: 10, y: -20 };
+
+    return {
+        cityName,
+        left: point.x + offset.x,
+        top: point.y + offset.y,
+        right: point.x + offset.x + size.width,
+        bottom: point.y + offset.y + size.height,
+        width: size.width,
+        height: size.height,
+        anchorX: point.x,
+        anchorY: point.y
+    };
+}
+
+// Check if two rectangles overlap
+function rectsOverlap(a, b) {
+    return !(a.right + LABEL_PADDING < b.left ||
+             b.right + LABEL_PADDING < a.left ||
+             a.bottom + LABEL_PADDING < b.top ||
+             b.bottom + LABEL_PADDING < a.top);
+}
+
+// Resolve overlaps by adjusting label offsets
+function resolveOverlaps() {
+    const cities = Object.keys(markersData);
+    if (cities.length < 2) return;
+
+    // Reset offsets
+    cities.forEach(cityName => {
+        markersData[cityName].offset = { x: 10, y: -20 };
+    });
+
+    // Possible offset positions (clockwise from right)
+    const offsetPositions = [
+        { x: 10, y: -20 },    // Right-top (default)
+        { x: 10, y: 5 },      // Right-bottom
+        { x: -100, y: -20 },  // Left-top
+        { x: -100, y: 5 },    // Left-bottom
+        { x: -45, y: -50 },   // Top-center
+        { x: -45, y: 25 },    // Bottom-center
+        { x: 15, y: -45 },    // Upper right
+        { x: 15, y: 20 },     // Lower right
+    ];
+
+    // Iteratively resolve overlaps
+    const maxIterations = 10;
+    for (let iter = 0; iter < maxIterations; iter++) {
+        let hasOverlap = false;
+
+        for (let i = 0; i < cities.length; i++) {
+            const boundsA = getLabelBounds(cities[i]);
+            if (!boundsA) continue;
+
+            for (let j = i + 1; j < cities.length; j++) {
+                const boundsB = getLabelBounds(cities[j]);
+                if (!boundsB) continue;
+
+                if (rectsOverlap(boundsA, boundsB)) {
+                    hasOverlap = true;
+
+                    // Try different offset positions for the second label
+                    let resolved = false;
+                    for (const newOffset of offsetPositions) {
+                        markersData[cities[j]].offset = { ...newOffset };
+                        const newBoundsB = getLabelBounds(cities[j]);
+
+                        // Check if new position overlaps with any existing label
+                        let overlapsOther = false;
+                        for (let k = 0; k < cities.length; k++) {
+                            if (k === j) continue;
+                            const boundsK = getLabelBounds(cities[k]);
+                            if (boundsK && rectsOverlap(newBoundsB, boundsK)) {
+                                overlapsOther = true;
+                                break;
+                            }
+                        }
+
+                        if (!overlapsOther) {
+                            resolved = true;
+                            break;
+                        }
+                    }
+
+                    // If no position works, add progressive offset
+                    if (!resolved) {
+                        const currentOffset = markersData[cities[j]].offset;
+                        markersData[cities[j]].offset = {
+                            x: currentOffset.x,
+                            y: currentOffset.y + (iter + 1) * 30
+                        };
+                    }
+                }
+            }
+        }
+
+        if (!hasOverlap) break;
+    }
+}
+
+// Update all labels with collision detection
+function updateAllLabels() {
+    resolveOverlaps();
+
+    Object.keys(markersData).forEach(cityName => {
+        updateMarkerLabel(cityName, false);
+    });
+}
+
 // Create or update marker label
-function updateMarkerLabel(cityName) {
+function updateMarkerLabel(cityName, resolveCollisions = true) {
     const data = markersData[cityName];
     if (!data) return;
 
     const city = US_CITIES.find(c => c.name === cityName);
     if (!city) return;
 
-    // Remove existing label if any
+    // Remove existing label and leader line if any
     if (data.label) {
         map.removeLayer(data.label);
     }
+    if (data.leaderLine) {
+        map.removeLayer(data.leaderLine);
+    }
+
+    // Get offset (default or calculated)
+    const offset = data.offset || { x: 10, y: -20 };
 
     // Create label content
     const namesText = data.names.length > 0 ? data.names.join(', ') : '';
@@ -47,16 +185,36 @@ function updateMarkerLabel(cityName) {
         </div>
     `;
 
-    // Create custom icon for label
+    // Create custom icon for label with dynamic offset
     const labelIcon = L.divIcon({
         className: 'label-container',
         html: labelHtml,
         iconSize: null,
-        iconAnchor: [-10, 20]
+        iconAnchor: [-offset.x, -offset.y]
     });
 
     // Add label marker
-    data.label = L.marker([city.lat, city.lng], { icon: labelIcon }).addTo(map);
+    data.label = L.marker([city.lat, city.lng], { icon: labelIcon, interactive: false }).addTo(map);
+
+    // Draw leader line if label is significantly offset
+    const offsetDistance = Math.sqrt(offset.x * offset.x + offset.y * offset.y);
+    if (offsetDistance > 30) {
+        const point = map.latLngToContainerPoint([city.lat, city.lng]);
+        const labelPoint = L.point(point.x + offset.x, point.y + offset.y + 10);
+        const labelLatLng = map.containerPointToLatLng(labelPoint);
+
+        data.leaderLine = L.polyline([[city.lat, city.lng], labelLatLng], {
+            color: '#999',
+            weight: 1,
+            dashArray: '3, 3',
+            interactive: false
+        }).addTo(map);
+    }
+
+    // Resolve collisions after updating (unless called from updateAllLabels)
+    if (resolveCollisions && Object.keys(markersData).length > 1) {
+        updateAllLabels();
+    }
 }
 
 // Add city to map
@@ -78,7 +236,9 @@ function addCityMarker(cityName, personName) {
         markersData[cityName] = {
             marker: marker,
             label: null,
-            names: []
+            leaderLine: null,
+            names: [],
+            offset: { x: 10, y: -20 }
         };
     }
 
@@ -87,7 +247,7 @@ function addCityMarker(cityName, personName) {
         markersData[cityName].names.push(personName);
     }
 
-    updateMarkerLabel(cityName);
+    updateAllLabels();
     renderMarkersList();
 }
 
@@ -99,7 +259,11 @@ function removeCityMarker(cityName) {
         if (data.label) {
             map.removeLayer(data.label);
         }
+        if (data.leaderLine) {
+            map.removeLayer(data.leaderLine);
+        }
         delete markersData[cityName];
+        updateAllLabels();
         renderMarkersList();
     }
 }
@@ -109,7 +273,7 @@ function removeNameFromCity(cityName, personName) {
     const data = markersData[cityName];
     if (data) {
         data.names = data.names.filter(n => n !== personName);
-        updateMarkerLabel(cityName);
+        updateAllLabels();
         renderMarkersList();
     }
 }
@@ -176,6 +340,13 @@ addBtn.addEventListener('click', () => {
 nameInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') {
         addBtn.click();
+    }
+});
+
+// Recalculate label positions when map zooms or moves
+map.on('zoomend moveend', () => {
+    if (Object.keys(markersData).length > 0) {
+        updateAllLabels();
     }
 });
 
