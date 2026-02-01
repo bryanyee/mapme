@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>US City Map</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <h1>US City Map</h1>
+
+        <div id="map"></div>
+
+        <div class="controls">
+            <h2>Add City Marker</h2>
+            <div class="input-group">
+                <label for="city-select">Select City:</label>
+                <select id="city-select">
+                    <option value="">-- Choose a city --</option>
+                </select>
+            </div>
+            <div class="input-group">
+                <label for="name-input">Person's Name:</label>
+                <input type="text" id="name-input" placeholder="Enter name">
+            </div>
+            <button id="add-btn">Add to Map</button>
+
+            <h2>Current Markers</h2>
+            <div id="markers-list"></div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="cities.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
